@@ -1,6 +1,7 @@
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
 #include <EEPROM.h>
+#include <ArduinoJson.h>
 
 //ESP-12
 #define IN1 14 //GPIO 14
@@ -11,6 +12,7 @@
 #define DOWN 5 //GPIO 5
 #define RST 2  //GPIO 2
 #define LED 15 //GPIO 15
+int deviceId;
 
 //ESP-12 Wifi Server
 #define SETUP_PAGE 0
@@ -36,10 +38,12 @@ int statusCode;
 // 101 ~ 105: Current Turn (binary)
 // 106 ~ 125: ThingSpeak Write API keys
 // 126 ~ 145: ThingSpeak Read API Keys
+// 146 ~ 155: ThingSpeak Channel ID
 int totalTurns;
 int currentTurn;
 String writeApiKeys;
 String readApiKeys;
+String channelId;
 
 //Motor
 const int NBSTEPS = 4095;
@@ -79,7 +83,7 @@ void setupAP();
 
 void getApiKeys();
 void setApiKeys(String writeKeys, String readKeys);
-void checkApiServer();
+boolean checkApiServer();
 void sendToApiServer();
 void getFromApiServer();
 
@@ -102,6 +106,8 @@ void rstPressInterrupt(); //press reset button
 void rstReleaseInterrupt(); //release release button
 
 void setup() {
+  deviceId = ESP.getChipId();
+  
   Serial.begin(115200);
   EEPROM.begin(512);
   
@@ -484,18 +490,108 @@ void setupAP() {
 
 
 void getApiKeys() {
+  writeApiKeys = "";
+  for (int i = 106; i < 126; ++i) {
+    writeApiKeys += char(EEPROM.read(i));
+  }
+  Serial.print("Write API keys: ");
+  Serial.println(writeApiKeys);
+  readApiKeys = "";
+  for (int i = 126; i < 146; ++i) {
+    readApiKeys += char(EEPROM.read(i));
+  }
+  Serial.print("Read API keys: ");
+  Serial.println(readApiKeys);
+  channelId = "";
+  for (int i = 146; i < 156; ++i) {
+    channelId += char(EEPROM.read(i));
+  }
+  Serial.print("Read channel ID: ");
+  Serial.println(channelId);
 }
 
-void setApiKeys(String writeKeys, String readKeys) {
+void setApiKeys(String writeKeys, String readKeys, String apiId) {
+  for (int i = 0; i < writeKeys.length(); ++i) {
+    EEPROM.write(106 + i, writeKeys[i]);
+  }
+  Serial.println("set write API keys");
+  for (int i = 0; i < readKeys.length(); ++i) {
+    EEPROM.write(126 + i, readKeys[i]);
+  }
+  Serial.println("set read API keys");
+  for (int i = 0; i < apiId.length(); ++i) {
+    EEPROM.write(146 + i, apiId[i]);
+  }
+  Serial.println("set channel ID");
+  
+  EEPROM.commit();
 }
 
-void checkApiServer() {
+boolean checkApiServer() {
+  if (!wifiConnected) {
+    return false;
+  }
+
+  WiFiClient client;
+  if (!client.connect(API_HOST, API_PORT)) {
+    Serial.println("API server connection failed");
+    client.stop();
+    return false;
+  }
+  
+  client.stop();
+  return true;
 }
 
 void sendToApiServer() {
+  if (!checkApiServer()) {
+    Serial.println("Send data failed");
+  }
+  
+  WiFiClient client;
+  client.connect(API_HOST, API_PORT);
+  
+  String cmdStr = "GET /update?api_key" + writeApiKeys + \
+                  "&field1=" + String((float)currentTurn / (float)totalTurns * (float)100, 1) + \
+                  "&field2=" + String(currentTurn) + \
+                  "&field3=" + String(totalTurns) + \
+                  "&field4=" + String(deviceId) + " HTTP/1.1\r\n" + \
+                  "Host: " + API_HOST + "\n" + \
+                  "Connection: close\r\n\r\n";
+
+  client.print(cmdStr);
+  delay(10);
+  
+  client.stop();
+  Serial.print("Send data:");
+  Serial.println(cmdStr);
 }
 
 void getFromApiServer() {
+  if (!checkApiServer()) {
+    Serial.println("get data failed");
+  }
+  
+  WiFiClient client;
+  client.connect(API_HOST, API_PORT);
+  
+  String cmdStr = "GET /channels/" + String(channelId) + "/feeds/last HTTP/1.1\r\n" + \
+                  "HOST: " + API_HOST + "\n" + \
+                  "Connection: keep-alive\r\n\r\n";
+  
+  delay(10);
+
+  // todo: json parser
+  while(client.available()) {
+    String getData = "";
+    getData = client.readStringUntil('\r');
+  }
+
+  client.print(cmdStr);
+  delay(10);
+  
+  client.stop();
+  Serial.print("Send data:");
 }
 
 
