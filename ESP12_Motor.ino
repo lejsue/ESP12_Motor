@@ -149,12 +149,17 @@ void setup() {
   WiFi.persistent(false);
 
   setupAP();
-  
+
   if (eeSsid.length() > 1) {
     Serial.println("Wifi begin");
     WiFi.begin(eeSsid.c_str(), eePassword.c_str());
     Serial.println("Test wifi");
     if (testWifi()) {
+      writeApiKeys = "G1E1KZPXRW3E0SHV";
+  readApiKeys = "780I785M92N6LYR0";
+  channelId = "213627";
+  checkApiServer();
+  getFromApiServer();
       launchWeb(NORMAL_PAGE);
       return;
     } else {
@@ -551,7 +556,7 @@ void sendToApiServer() {
   WiFiClient client;
   client.connect(API_HOST, API_PORT);
   
-  String cmdStr = "GET /update?api_key" + writeApiKeys + \
+  String cmdStr = "GET /update?api_key=" + writeApiKeys + \
                   "&field1=" + String((float)currentTurn / (float)totalTurns * (float)100, 1) + \
                   "&field2=" + String(currentTurn) + \
                   "&field3=" + String(totalTurns) + \
@@ -575,23 +580,49 @@ void getFromApiServer() {
   WiFiClient client;
   client.connect(API_HOST, API_PORT);
   
-  String cmdStr = "GET /channels/" + String(channelId) + "/feeds/last HTTP/1.1\r\n" + \
-                  "HOST: " + API_HOST + "\n" + \
-                  "Connection: keep-alive\r\n\r\n";
-  
-  delay(10);
+  String cmdStr = "GET /channels/" + String(channelId) + "/feeds/last?api_key=" + readApiKeys + \
+                  " HTTP/1.1\r\n" + \
+                  "Host: " + API_HOST + "\n" + \
+                  "Connection: close\r\n\r\n";
+ 
+  client.print(cmdStr);
+  Serial.print("Send data:");
+  Serial.println(cmdStr);
 
-  // todo: json parser
+  int i = 0;
+  while((!client.available()) && (i < 1000)) {
+    delay(10);
+    i++;
+  }
+  
   while(client.available()) {
     String getData = "";
+    String deviceIdInServer;
     getData = client.readStringUntil('\r');
-  }
+    getData.trim();
 
-  client.print(cmdStr);
-  delay(10);
+    if (getData.substring(0,1) == "{") {
+      char json[getData.length() + 1];
+      getData.toCharArray(json, getData.length() + 1);
+      StaticJsonBuffer<200> jsonBuffer;
+      JsonObject& jsonData = jsonBuffer.parseObject(json);
+      if (!jsonData.success()) {
+        Serial.println("json parse failed");
+        return;
+      }
+
+      const char* tmpDeviceId = jsonData["field4"];
+      int tmpCurrentTurn = jsonData["field2"];
+      
+      deviceIdInServer = String(tmpDeviceId);
+      Serial.println(deviceIdInServer);
+      Serial.println(tmpCurrentTurn);
+    }
+  }
   
   client.stop();
-  Serial.print("Send data:");
+
+  // todo: handle different deviceId, turn to top or bottom.
 }
 
 
