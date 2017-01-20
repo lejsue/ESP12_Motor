@@ -32,6 +32,10 @@ int statusCode;
 #define API_PORT 80
 int deviceIdInServer;
 int currentTurnInServer;
+int totalTurnsInServer;
+boolean sendSuccess = false;
+boolean getSuccess = false;
+boolean apiAllSuccess = false;
 
 //EEPROM
 //  0 ~  31: Wifi AP SSID
@@ -60,6 +64,7 @@ boolean settingTotalTurns = false;
 boolean stopStep = false;
 boolean runToTop = false;
 boolean runToBottom = false;
+boolean manual = false;
 
 int stepsDefault[4] = {LOW, LOW, LOW, LOW};
 
@@ -74,7 +79,7 @@ int stepsMatrix[8][4] = {
   {HIGH, LOW, LOW, HIGH},
 };
 
-unsigned long lastTurnTim = 0L;
+unsigned long lastTurnTime = 0L;
 unsigned long lastRstTime = 0L;
 unsigned long lastApiTime = 0L;
 unsigned long tmpTime = 0L;
@@ -92,8 +97,9 @@ void setPeriod(int inputPeriod);
 void getApiKeys();
 void setApiKeys(String inputWriteKey, String inputReadKey, String inputChannelId);
 void cleanApiKeys();
+boolean checkApiKeys();
 boolean checkApiServer();
-void sendToApiServer();
+void sendToApiServer(int inputCurrentTurn, int inputTotalTurns);
 void getFromApiServer();
 
 void getTotalTurns();
@@ -150,6 +156,7 @@ void setup() {
   Serial.println(eePassword);
   getTotalTurns();
   getCurrentTurn();
+  totalTurns = 10;
   Serial.print("Total Number of Turns: ");
   Serial.println(totalTurns);
   Serial.print("Current Turn: ");
@@ -161,6 +168,7 @@ void setup() {
 
   lastApiTime = micros();
   getPeriod();
+  getApiKeys();
   
   if (eeSsid.length() > 1) {
     Serial.println("Wifi begin");
@@ -168,6 +176,7 @@ void setup() {
     Serial.println("Test wifi");
     if (testWifi()) {
       launchWeb(NORMAL_PAGE);
+      apiAllSuccess = checkApiKeys();
       return;
     } else {
       launchWeb(SETUP_PAGE);
@@ -189,10 +198,21 @@ void loop() {
 
   if (runToTop) {
     top();
+
+    if (wifiConnected && checkApiServer() && apiAllSuccess) {
+      sendToApiServer(currentTurn, totalTurns);
+      lastApiTime = micros();
+      manual = false;
+    }
   }
 
   if (runToBottom) {
     bottom();
+    if (wifiConnected && checkApiServer() && apiAllSuccess) {
+      sendToApiServer(currentTurn, totalTurns);
+      lastApiTime = micros();
+      manual = false;
+    }
   }
   
   if (settingTotalTurns) {
@@ -218,19 +238,24 @@ void loop() {
   }
 
   if (wifiConnected) {
-    if ((currentApiTime - lastApiTime) / 1000000L > period * 60 && period > 0 && checkApiServer()) {
+    if ((currentApiTime - lastApiTime) / 1000000L > 1 * 60 && period > 0 && checkApiServer()) {
       getApiKeys();
       getFromApiServer();
-
-      if (deviceIdInServer != deviceId) {
-        if (currentTurnInServer == 0) {
-          top();
+      if ((deviceIdInServer != deviceId  || currentTurnInServer != currentTurn) && totalTurns > 0) {
+        if (manual) {
+          sendToApiServer(currentTurn, totalTurns);
+          manual = false;
         } else {
-          bottom();
+          if (currentTurnInServer == 0) {
+            top();
+          } else {
+            bottom();
+          }
+          sendToApiServer(currentTurn, totalTurns);
         }
       }
 
-      sendToApiServer();
+      lastApiTime = micros();
     }
   }
 }
@@ -307,8 +332,9 @@ void createWebServer(int webType) {
       scanAccessWifi();
       IPAddress ip = WiFi.softAPIP();
       String ipStr = String(ip[0]) + '.' + String(ip[1]) + '.' + String(ip[2]) + '.' + String(ip[3]);
-      content = "<!DOCTYPE HTML>\r\n<html>";
-            content += "<style type='text/css'>\n";
+      content = "<!DOCTYPE HTML><head><meta name='viewport' content='width=device-width, initial-scale=1.0'></head>";
+      content += "<html>";
+      content += "<style type='text/css'>\n";
       content += "input[type=\"button\"] {\n";
       content += "  width:120px;height:25px;margin:5px 0 5px 0;\n";
       content += "}\n";
@@ -391,7 +417,8 @@ void createWebServer(int webType) {
           EEPROM.write(32 + i, qPassword[i]);
         }
         EEPROM.commit();
-        content = "<!DOCTYPE HTML>\r\n<html>Hello, this is  ";
+        content = "<!DOCTYPE HTML><head><meta name='viewport' content='width=device-width, initial-scale=1.0'></head>";
+        content += "<html>Hello, this is  ";
         content += PRODUCT + " at ";
         content += ipStr;
         content += ".<br>Save your SSID and Password success.<br>";
@@ -399,7 +426,8 @@ void createWebServer(int webType) {
         content += "</html>";
         statusCode = 200;
       } else {
-        content = "<!DOCTYPE HTML>\r\n<html>404 not found</html>";
+        content = "<!DOCTYPE HTML><head><meta name='viewport' content='width=device-width, initial-scale=1.0'></head>";
+        content += "<html>404 not found</html>";
         statusCode = 404;
         Serial.println("Sending 404");
       }
@@ -410,7 +438,8 @@ void createWebServer(int webType) {
     server.on("/", []() {
       IPAddress ip = WiFi.localIP();
       String ipStr = String(ip[0]) + '.' + String(ip[1]) + '.' + String(ip[2]) + '.' + String(ip[3]);
-      content = "<!DOCTYPE HTML>\r\n<html>";
+      content = "<!DOCTYPE HTML><head><meta name='viewport' content='width=device-width, initial-scale=1.0'></head>";
+      content += "<html>";
       content += "<style type='text/css'>\n";
       content += "input[type=\"button\"] {\n";
       content += "  width:120px;height:25px;margin:5px 0 5px 0;\n";
@@ -453,16 +482,19 @@ void createWebServer(int webType) {
       content += ".<br>";
       getApiKeys();
       getPeriod();
-      if (writeApiKey.length() > 0 && readApiKey.length() > 0 && checkApiServer()) {
+
+      checkApiKeys();
+
+      if (apiAllSuccess) {
         content += "Connection to ThingSpeak server is success.<br>Send data to ThingSpeak server every " + String(period) + "minute(s).";
       } else {
         content += "Please setup the following configuration for ThingSpeak server.<br>";
-        content += "<form method='get' action='setting'><label style='width:80px;display:inline-block;'>Write API Key: </label><input type='text' name='wirteApiKey' length=32><br>";
-        content += "<label style='width:80px;display:inline-block;'>Read API Key: </label><input type='text' name='readApiKey' length=32><br>";
-        content += "<label style='width:80px;display:inline-block;'>Channel ID: </label><input type='text' name='channelId' length=32><br>";
-        content += "<selec name='period'>";
+        content += "<form method='get' action='setting'><label style='width:140px;display:inline-block;'>Write API Key: </label><input type='text' name='writeApiKey' length=32><br>";
+        content += "<label style='width:140px;display:inline-block;'>Read API Key: </label><input type='text' name='readApiKey' length=32><br>";
+        content += "<label style='width:140px;display:inline-block;'>Channel ID: </label><input type='text' name='channelId' length=32><br>";
+        content += "<label style='width:140px;display:inline-block;'>Connection Period:</label><select name='period'>";
         content += "<option value=5>5 mins</option><option value=10>10 mins</option><option value=20>20 mins</option><option value=30>30 mins</option><option value=40>40 mins</option><option value=50>50 mins</option><option value=60>60 mins</option>";
-        content += "</select><br><input type='submit' value='submit'></form>";
+        content += "</select><br><input type='submit' value='submit'></form><br>";
       }
       
       if (currentTurn == 0) {
@@ -473,7 +505,7 @@ void createWebServer(int webType) {
         content += "Your Motor is on the " + String((float)currentTurn / (float)totalTurns * (float)100, 1) +"%.<br>";
       }
       content += "<div><input type=button onclick='javascript:sendCmd(\"cleanWifi\");' value='clean wifi data'></div>";
-      content += "<div><input type=button onclick='javascript:sendCmd(\"cleanApiKeys\");' value='clean ThingSpeak Api keys'></div>";
+      content += "<div><input type=button onclick='javascript:sendCmd(\"cleanApiKeys\");' value='clean Api keys'></div>";
       content += "<div><input type=button onclick='javascript:sendCmd(\"up\");' value='up'></div>";
       content += "<div><input type=button onclick='javascript:sendCmd(\"down\");' value='down'></div>";
       content += "<div><input type=button onclick='javascript:sendCmd(\"checkPosition\");' value='check position'></div>";
@@ -506,12 +538,14 @@ void createWebServer(int webType) {
       if (qWriteApiKey.length() > 0 && qReadApiKey.length() > 0) {
         setApiKeys(qWriteApiKey, qReadApiKey, qChannelId);
         setPeriod(qPeriod.toInt());
-        content = "<!DOCTYPE HTML>\r\n<html>";
+        content = "<!DOCTYPE HTML><head><meta name='viewport' content='width=device-width, initial-scale=1.0'></head>";
+        content += "<html>";
         content = "<script>alert('Setup success!');window.location.href='/';</script>";
         content += "</html>";
         statusCode = 200;
       } else {
-        content = "<!DOCTYPE HTML>\r\n<html>404 not found</html>";
+        content = "<!DOCTYPE HTML><head><meta name='viewport' content='width=device-width, initial-scale=1.0'></head>";
+        content += "<html>404 not found</html>";
         statusCode = 404;
         Serial.println("Sending 404");
       }
@@ -567,8 +601,6 @@ void setupAP() {
   scanAccessWifi();
   WiFi.softAP(SSID.c_str(), PASSWORD.c_str(), 6);
   Serial.println("softap");
-  //launchWeb(1);
-  //Serial.println("over");
 }
 
 
@@ -592,22 +624,27 @@ void setPeriod(int inputPeriod) {
 
 
 void getApiKeys() {
-  writeApiKey = "";
-  for (int i = 111; i < 131; ++i) {
-    writeApiKey += char(EEPROM.read(i));
+  char tmpKeys[20];
+  char tmpChannelId[10];
+  
+  for (int i = 111, j = 0; i < 131; ++i, ++j) {
+    tmpKeys[j] = char(EEPROM.read(i));
   }
+  writeApiKey = String(tmpKeys);
   Serial.print("Write API key: ");
   Serial.println(writeApiKey);
-  readApiKey = "";
-  for (int i = 131; i < 151; ++i) {
-    readApiKey += char(EEPROM.read(i));
+  
+  for (int i = 131, j = 0; i < 151; ++i, ++j) {
+    tmpKeys[j] = char(EEPROM.read(i));
   }
+  readApiKey = String(tmpKeys);
   Serial.print("Read API key: ");
   Serial.println(readApiKey);
-  channelId = "";
-  for (int i = 151; i < 160; ++i) {
-    channelId += char(EEPROM.read(i));
+  
+  for (int i = 151, j = 0; i < 160; ++i, ++j) {
+    tmpChannelId[j] = char(EEPROM.read(i));
   }
+  channelId = String(tmpChannelId).toInt();
   Serial.print("Read channel ID: ");
   Serial.println(channelId);
 }
@@ -633,9 +670,26 @@ void cleanApiKeys() {
   for (int i = 106; i < 161; ++i) {
      EEPROM.write(i, 0);
   }
-  Serial.println("clean API keys and channel ID.");
-  
   EEPROM.commit();
+  Serial.println("clean API keys and channel ID.");
+
+}
+
+boolean checkApiKeys() {
+  apiAllSuccess = false;
+  if (writeApiKey.length() > 0 && readApiKey.length() > 0) {
+    getFromApiServer();
+    if (getSuccess) {
+      sendToApiServer(currentTurnInServer, totalTurnsInServer);
+    }
+
+    if (sendSuccess) {
+      apiAllSuccess = true;
+      return true;
+    }
+  }
+
+  return false;
 }
 
 boolean checkApiServer() {
@@ -650,16 +704,34 @@ boolean checkApiServer() {
     client.stop();
     return false;
   }
+ 
+  client.stop();
+  Serial.println("API server connection success.");
+  return true;
+}
 
-  // todo: check write api key
-  String cmdStr = "PUT /channels/" + String(channelId) + ".json?api_key=" + writeApiKey + \
-                  " HTTP/1.1\r\n" + \
+void sendToApiServer(int inputCurrentTurn, int inputTotalTurns) {
+  sendSuccess = false;
+  
+  if (!checkApiServer()) {
+    Serial.println("Send data failed");
+  }
+  
+  WiFiClient client;
+  client.connect(API_HOST, API_PORT);
+  
+  String cmdStr = "GET /update.json?api_key=" + writeApiKey + \
+                  "&field1=" + String((float)inputCurrentTurn / (float)inputTotalTurns * (float)100, 1) + \
+                  "&field2=" + String(inputCurrentTurn) + \
+                  "&field3=" + String(inputTotalTurns) + \
+                  "&field4=" + String(deviceId) + " HTTP/1.1\r\n" + \
                   "Host: " + API_HOST + "\n" + \
-                  "Connection: close\r\n\r\n";  
+                  "Connection: close\r\n\r\n";
 
   client.print(cmdStr);
   Serial.print("Send data:");
   Serial.println(cmdStr);
+  delay(10);
 
   int i = 0;
   while((!client.available()) && (i < 1000)) {
@@ -675,77 +747,24 @@ boolean checkApiServer() {
     if (getData.substring(0,1) == "{") {
       char json[getData.length() + 1];
       getData.toCharArray(json, getData.length() + 1);
-      StaticJsonBuffer<200> jsonBuffer;
+      StaticJsonBuffer<350> jsonBuffer;
       JsonObject& jsonData = jsonBuffer.parseObject(json);
-      if (!jsonData.success()) {
+      Serial.println(getData);
+      if (jsonData.success()) {
+        sendSuccess = true;
+        Serial.println("send success");
+      } else {
         Serial.println("json parse failed");
-        return false;
       }
     }
   }
   
-  cmdStr = "GET /channels/" + String(channelId) + "/status.json?api_key=" + readApiKey + \
-                  " HTTP/1.1\r\n" + \
-                  "Host: " + API_HOST + "\n" + \
-                  "Connection: close\r\n\r\n";  
-
-  client.print(cmdStr);
-  Serial.print("Send data:");
-  Serial.println(cmdStr);
-
-  i = 0;
-  while((!client.available()) && (i < 1000)) {
-    delay(10);
-    i++;
-  }
-  
-  while(client.available()) {
-    String getData = "";
-    getData = client.readStringUntil('\r');
-    getData.trim();
-
-    if (getData.substring(0,1) == "{") {
-      char json[getData.length() + 1];
-      getData.toCharArray(json, getData.length() + 1);
-      StaticJsonBuffer<200> jsonBuffer;
-      JsonObject& jsonData = jsonBuffer.parseObject(json);
-      if (!jsonData.success()) {
-        Serial.println("json parse failed");
-        return false;
-      }
-    }
-  }
- 
   client.stop();
-  Serial.println("API server connection success.");
-  return true;
-}
-
-void sendToApiServer() {
-  if (!checkApiServer()) {
-    Serial.println("Send data failed");
-  }
-  
-  WiFiClient client;
-  client.connect(API_HOST, API_PORT);
-  
-  String cmdStr = "GET /update?api_key=" + writeApiKey + \
-                  "&field1=" + String((float)currentTurn / (float)totalTurns * (float)100, 1) + \
-                  "&field2=" + String(currentTurn) + \
-                  "&field3=" + String(totalTurns) + \
-                  "&field4=" + String(deviceId) + " HTTP/1.1\r\n" + \
-                  "Host: " + API_HOST + "\n" + \
-                  "Connection: close\r\n\r\n";
-
-  client.print(cmdStr);
-  delay(10);
-
-  client.stop();
-  Serial.print("Send data:");
-  Serial.println(cmdStr);
 }
 
 void getFromApiServer() {
+  getSuccess = false;
+  
   if (!checkApiServer()) {
     Serial.println("get data failed");
   }
@@ -778,23 +797,26 @@ void getFromApiServer() {
       getData.toCharArray(json, getData.length() + 1);
       StaticJsonBuffer<200> jsonBuffer;
       JsonObject& jsonData = jsonBuffer.parseObject(json);
-      if (!jsonData.success()) {
-        Serial.println("json parse failed");
-        return;
-      }
+      if (jsonData.success()) {
+        const char* tmpDeviceId = jsonData["field4"];
+        currentTurnInServer = jsonData["field2"];
+        totalTurnsInServer = jsonData["field3"];
+        
+        deviceIdInServer = String(tmpDeviceId).toInt();
 
-      const char* tmpDeviceId = jsonData["field4"];
-      currentTurnInServer = jsonData["field2"];
-      
-      deviceIdInServer = String(tmpDeviceId).toInt();
-      Serial.println(deviceIdInServer);
-      Serial.println(currentTurnInServer);
+        Serial.print("Device ID in API Server: ");
+        Serial.println(deviceIdInServer);
+        Serial.print("Current Turn in API Server: ");
+        Serial.println(currentTurnInServer);
+
+        getSuccess = true;
+      } else {
+        Serial.println("json parse failed");
+      }
     }
   }
   
   client.stop();
-
-  // todo: handle different deviceId, turn to top or bottom.
 }
 
 
@@ -861,21 +883,24 @@ void setDirection() {
 }
 
 void oneTurn() {
+  Serial.println(String(clockwise));
+  Serial.println(String(currentTurn));
+  Serial.println(String(totalTurns));
   if (!settingTotalTurns && ((!clockwise && currentTurn == 0) || (clockwise && currentTurn >= totalTurns))) {
     return;
   }
-  
+
   unsigned long currentMicros;
   int stepsLeft = NBSTEPS;
   tmpTime = 0;
-  lastTurnTim = micros();
+  lastTurnTime = micros();
   runningStep = true;
   while (stepsLeft > 0) {
     currentMicros = micros();
-    if (currentMicros - lastTurnTim >= STEPTIME) {
+    if (currentMicros - lastTurnTime >= STEPTIME) {
       stepper();
-      tmpTime += micros() - lastTurnTim;
-      lastTurnTim = micros();
+      tmpTime += micros() - lastTurnTime;
+      lastTurnTime = micros();
       stepsLeft--;
     }
     delay(1);
@@ -896,23 +921,24 @@ void oneTurn() {
 
   setCurrentTurn();
   runningStep = false;
+  manual = true;
 }
 
 void top() {
-  if (currentTurn > 0) {
+  if (currentTurn > 0 && totalTurns > 0) {
     clockwise = false;
   }
-  while(currentTurn > 0) {
+  while(currentTurn > 0 && totalTurns > 0) {
     oneTurn();
   }
 }
 
 void bottom() {
-  if (currentTurn <= totalTurns) {
+  if (currentTurn <= totalTurns && totalTurns > 0) {
     clockwise = true;
   }
-  while(currentTurn <= totalTurns) {
-    oneTurn();
+  while(currentTurn <= totalTurns && totalTurns > 0) {
+   oneTurn();
   }
 }
 
