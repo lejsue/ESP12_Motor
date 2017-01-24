@@ -883,9 +883,6 @@ void setDirection() {
 }
 
 void oneTurn() {
-  Serial.println(String(clockwise));
-  Serial.println(String(currentTurn));
-  Serial.println(String(totalTurns));
   if (!settingTotalTurns && ((!clockwise && currentTurn == 0) || (clockwise && currentTurn >= totalTurns))) {
     return;
   }
